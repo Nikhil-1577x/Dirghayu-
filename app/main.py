@@ -98,6 +98,7 @@ from app.api.alert_routes import router as alert_router
 from app.api.report_routes import router as report_router
 from app.api.risk_routes import router as risk_router
 from app.api.websocket_routes import router as ws_router
+from app.api.interaction_routes import router as interaction_router
 
 app.include_router(patient_router)
 app.include_router(biomarker_router)
@@ -106,6 +107,7 @@ app.include_router(alert_router)
 app.include_router(report_router)
 app.include_router(risk_router)
 app.include_router(ws_router)
+app.include_router(interaction_router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

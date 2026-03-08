@@ -8,7 +8,7 @@ from app.utils.constants import RiskLevel
 from app.utils.time_utils import utcnow_str
 from app.utils.db_utils import execute, fetchone, fetchall, rows_to_dicts
 
-from ai_modules.predict import predict_risk
+from app.ai_modules.predict import predict_risk
 
 logger = logging.getLogger(__name__)
 

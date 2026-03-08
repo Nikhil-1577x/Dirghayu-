@@ -65,6 +65,118 @@ def _send_daily_summaries() -> None:
             logger.error("Daily summary failed for patient %d: %s", pid, exc)
 
 
+# ── GAP 2: Morning daily protocol ─────────────────────────────────────────────
+
+# Per-medication food/timing context for known NCD drugs
+_MED_GUIDANCE: dict[str, str] = {
+    "metformin":    "Take WITH breakfast and dinner. NEVER on an empty stomach — reduces GI side effects.",
+    "amlodipine":   "Take at the same time each day. Food does not affect absorption.",
+    "insulin":      "Administer as prescribed. NO exercise within 2 hours after dose — hypoglycemia risk.",
+    "glipizide":    "Take 30 minutes before meals. Monitor for low blood sugar.",
+    "atorvastatin": "Take at any time of day, preferably in the evening. Avoid grapefruit.",
+    "aspirin":      "Take with food or a full glass of water to protect the stomach.",
+    "losartan":     "Take at the same time each day. Avoid potassium-rich supplements.",
+    "ramipril":     "Take on an empty stomach for best absorption. Avoid NSAIDs.",
+}
+
+_DEFAULT_MED_GUIDANCE = "Take as prescribed. Consult your doctor if unsure."
+
+
+def _morning_guidance_for_med(name: str, dose: str, schedule_time: str) -> str:
+    name_lower = name.strip().lower()
+    guidance = _DEFAULT_MED_GUIDANCE
+    for keyword, tip in _MED_GUIDANCE.items():
+        if keyword in name_lower:
+            guidance = tip
+            break
+    return f"  💊 {name} {dose} @ {schedule_time}\n     {guidance}"
+
+
+def _send_morning_protocols() -> None:
+    """
+    GAP 2 — Send personalised 7 AM daily protocol to every patient.
+
+    Message contains:
+    - Each medication with its food/timing guidance
+    - Exercise recommendation (20 min walk, avoid within 2h of insulin)
+    - Appointment reminder if an appointment is within 72 hours
+
+    Fired via CronTrigger at 07:00 UTC daily (≈ 12:30 PM IST / adjustable).
+    Uses existing Twilio WhatsApp service — no new sender needed.
+    """
+    from app.services.alert_service import send_whatsapp, _log_alert
+    from app.utils.constants import AlertType
+
+    now = datetime.now(timezone.utc)
+    window_72h = (now + timedelta(hours=72)).isoformat()
+
+    patients = fetchall("SELECT * FROM patients")
+    for patient in patients:
+        pid = patient["id"]
+        phone = patient["phone"]
+        if not phone:
+            continue
+
+        try:
+            # Build medication protocol section
+            meds = fetchall(
+                "SELECT name, dose, schedule_time FROM medications WHERE patient_id = ? ORDER BY schedule_time",
+                (pid,),
+            )
+            if not meds:
+                continue
+
+            med_lines = "\n".join(
+                _morning_guidance_for_med(m["name"], m["dose"], m["schedule_time"])
+                for m in meds
+            )
+
+            # Check if any medication is insulin to add exercise warning
+            has_insulin = any("insulin" in m["name"].lower() for m in meds)
+            if has_insulin:
+                exercise_tip = (
+                    "🏃 Exercise: 20-min walk recommended between 6–8am or 5–7pm.\n"
+                    "   ⚠️ Do NOT exercise within 2 hours of insulin dose."
+                )
+            else:
+                exercise_tip = (
+                    "🏃 Exercise: 20-min walk recommended between 6–8am or 5–7pm.\n"
+                    "   Best done on a light stomach for blood sugar control."
+                )
+
+            # Upcoming appointment within 72 hours
+            upcoming = fetchall(
+                """SELECT appointment_time, doctor_name FROM appointments
+                   WHERE patient_id = ? AND appointment_time BETWEEN ? AND ?
+                   ORDER BY appointment_time LIMIT 1""",
+                (pid, now.isoformat(), window_72h),
+            )
+            appt_line = ""
+            if upcoming:
+                appt = upcoming[0]
+                appt_line = (
+                    f"\n\n📅 APPOINTMENT REMINDER:\n"
+                    f"   You have an appointment with {appt['doctor_name']}\n"
+                    f"   on {appt['appointment_time'][:16].replace('T', ' at ')} UTC.\n"
+                    f"   Please bring your medication log and glucose readings."
+                )
+
+            msg = (
+                f"🌅 Good morning, {patient['name']}!\n\n"
+                f"Here is your health protocol for today:\n\n"
+                f"{med_lines}\n\n"
+                f"{exercise_tip}"
+                f"{appt_line}\n\n"
+                f"Stay consistent — every dose counts. 💙"
+            )
+
+            send_whatsapp(phone, msg)
+            _log_alert(pid, AlertType.DOSE_REMINDER, msg, phone)
+            logger.info("Morning protocol sent to patient %d", pid)
+
+        except Exception as exc:
+            logger.error("Morning protocol failed for patient %d: %s", pid, exc)
+
 def _check_drug_holidays() -> None:
     """Check every patient for drug holiday every hour."""
     from app.services.adherence_engine import check_drug_holiday
@@ -141,6 +253,15 @@ def start_scheduler() -> None:
         _send_dose_reminders,
         trigger=IntervalTrigger(minutes=1),
         id="dose_reminders",
+        replace_existing=True,
+    )
+
+    # ── Morning protocol – 7 AM UTC daily (≈ 12:30 PM IST) ─────────────────
+    # GAP 2: personalised medication guidance, exercise tip, 72h appointment reminder
+    _scheduler.add_job(
+        _send_morning_protocols,
+        trigger=CronTrigger(hour=7, minute=0),
+        id="morning_protocol",
         replace_existing=True,
     )
 

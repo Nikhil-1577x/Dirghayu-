@@ -102,7 +102,29 @@ def init_db() -> None:
         file_path  TEXT    NOT NULL,
         created_at TEXT    NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- ── Drug interactions (GAP 3) ─────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS drug_interactions (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        drug_a        TEXT    NOT NULL,
+        drug_b        TEXT    NOT NULL,
+        severity      TEXT    NOT NULL CHECK(severity IN ('SEVERE','MODERATE')),
+        clinical_note TEXT    NOT NULL
+    );
+
+    -- ── Environment readings – DHT22 (GAP 4) ─────────────────────────────
+    CREATE TABLE IF NOT EXISTS environment_readings (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id     INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        temperature_c  REAL    NOT NULL,
+        humidity_pct   REAL    NOT NULL,
+        timestamp      TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
     """)
 
     conn.commit()
     conn.close()
+
+    # Seed drug interactions idempotently after tables are created
+    from app.services.drug_interaction_service import seed_drug_interactions
+    seed_drug_interactions()

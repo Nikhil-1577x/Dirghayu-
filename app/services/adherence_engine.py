@@ -1,13 +1,17 @@
 """
 adherence_engine.py – Core adherence classification logic.
 
-Rules:
-  TAKEN  – dose taken within ±30 min of scheduled time
-  LATE   – dose taken within 2 hours of scheduled time
-  MISSED – no dose after 2 hours of scheduled time
+Rules (TASK 1 — exact thresholds, applied consistently):
+  TAKEN  – dose event received within ±30 minutes of scheduled time
+  LATE   – dose event received between 30 minutes and 2 hours of scheduled time
+  MISSED – no dose event received after the 2-hour window has passed
 
-Drug holiday – no activity for 18 hours → URGENT alert.
+Drug holiday – zero activity across ALL compartments for 18 consecutive hours → URGENT alert.
 Weekly score  – (taken / total) * 100
+
+TIMING NOTE: Scheduled datetime is anchored to the event's OWN calendar date,
+not today's date. This is critical for historical seed data and past records
+to be classified correctly regardless of when classify_dose() is called.
 """
 import logging
 from datetime import timedelta
@@ -20,7 +24,7 @@ from app.utils.constants import (
 )
 from app.utils.time_utils import (
     utcnow, utcnow_str, parse_iso,
-    scheduled_datetime_today, week_start_utc,
+    week_start_utc,
 )
 from app.utils.db_utils import execute, fetchall, fetchone, rows_to_dicts
 
@@ -30,21 +34,36 @@ logger = logging.getLogger(__name__)
 def classify_dose(medication_id: int, event_timestamp: str) -> DoseStatus:
     """
     Retrieve the scheduled time for medication_id and classify the dose event.
+
+    Thresholds (absolute time delta from the scheduled dose time):
+      TAKEN  – delta <= 30 minutes         (TAKEN_WINDOW_MINUTES = 30)
+      LATE   – 30 min < delta <= 120 min   (LATE_WINDOW_MINUTES  = 120)
+      MISSED – delta > 120 minutes
+
+    IMPORTANT: The scheduled datetime is anchored to the *event's own calendar date*,
+    NOT today's date. This ensures historical records (seed data, past logs) are
+    classified correctly regardless of when this function is called.
     """
     row = fetchone("SELECT schedule_time FROM medications WHERE id = ?", (medication_id,))
     if row is None:
         logger.warning("medication %d not found – classifying as LATE", medication_id)
         return DoseStatus.LATE
 
-    scheduled_dt = scheduled_datetime_today(row["schedule_time"])
     event_dt = parse_iso(event_timestamp)
+
+    # Build scheduled_dt using the event's own calendar date (not today)
+    h, m = map(int, row["schedule_time"].split(":"))
+    scheduled_dt = event_dt.replace(hour=h, minute=m, second=0, microsecond=0)
 
     delta_minutes = abs((event_dt - scheduled_dt).total_seconds()) / 60
 
+    # TAKEN: within ±30 minutes of scheduled time
     if delta_minutes <= TAKEN_WINDOW_MINUTES:
         return DoseStatus.TAKEN
+    # LATE: strictly between 30 and 120 minutes of scheduled time
     elif delta_minutes <= LATE_WINDOW_MINUTES:
         return DoseStatus.LATE
+    # MISSED: more than 2 hours from scheduled time
     else:
         return DoseStatus.MISSED
 
@@ -71,7 +90,8 @@ def record_dose_event(
 
 def check_drug_holiday(patient_id: int) -> bool:
     """
-    Return True if the patient has had no dose activity in DRUG_HOLIDAY_HOURS.
+    Return True if the patient has had no dose activity across ALL compartments
+    in the past DRUG_HOLIDAY_HOURS (18 hours).
     """
     cutoff = (utcnow() - timedelta(hours=DRUG_HOLIDAY_HOURS)).isoformat()
     row = fetchone(
@@ -84,7 +104,7 @@ def check_drug_holiday(patient_id: int) -> bool:
 def get_weekly_adherence(patient_id: int) -> dict:
     """
     Compute adherence for the current 7-day window.
-    Returns dict with taken, total, missed, score.
+    Returns dict with taken, late, missed, total, weekly_score.
     """
     since = week_start_utc().isoformat()
     rows = fetchall(
@@ -93,9 +113,10 @@ def get_weekly_adherence(patient_id: int) -> dict:
     )
     total = len(rows)
     taken = sum(1 for r in rows if r["status"] == DoseStatus.TAKEN.value)
+    late  = sum(1 for r in rows if r["status"] == DoseStatus.LATE.value)
     missed = sum(1 for r in rows if r["status"] == DoseStatus.MISSED.value)
     score = round((taken / total) * 100, 2) if total > 0 else 0.0
-    return {"taken": taken, "missed": missed, "total": total, "weekly_score": score}
+    return {"taken": taken, "late": late, "missed": missed, "total": total, "weekly_score": score}
 
 
 def get_daily_adherence(patient_id: int) -> dict:
@@ -108,9 +129,10 @@ def get_daily_adherence(patient_id: int) -> dict:
     )
     total = len(rows)
     taken = sum(1 for r in rows if r["status"] == DoseStatus.TAKEN.value)
+    late  = sum(1 for r in rows if r["status"] == DoseStatus.LATE.value)
     missed = sum(1 for r in rows if r["status"] == DoseStatus.MISSED.value)
     score = round((taken / total) * 100, 2) if total > 0 else 0.0
-    return {"taken": taken, "missed": missed, "total": total, "daily_score": score}
+    return {"taken": taken, "late": late, "missed": missed, "total": total, "daily_score": score}
 
 
 def get_missed_doses(patient_id: int) -> list[dict]:

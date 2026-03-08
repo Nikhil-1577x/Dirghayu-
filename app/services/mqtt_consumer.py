@@ -1,18 +1,22 @@
 """
-mqtt_consumer.py – Paho MQTT subscriber for pillbox/dose_event topic.
+mqtt_consumer.py – Paho MQTT subscriber for dose events AND DHT22 environment readings.
 
-Incoming JSON from ESP32:
-  { "patient_id": 1, "medication_id": 2, "timestamp": "ISO", "event": "taken" }
+Topics:
+  pillbox/dose_event   – ESP32 dose taken/missed events
+  pillbox/environment  – DHT22 temperature + humidity readings (GAP 4)
 
-On message:
+Dose event flow:
   1. Parse + validate payload
   2. Classify dose (TAKEN / LATE / MISSED)
-  3. Insert into dose_events
-  4. Run adherence checks + drug holiday check
-  5. Trigger alert cascade if needed
-  6. Recompute risk score
-  7. Push WebSocket update
-  8. Store in DB (done via adherence_engine.record_dose_event)
+  3. Record in dose_events
+  4. Drug holiday check + alert cascade
+  5. Recompute risk score
+  6. Push WebSocket update
+
+Environment event flow:
+  1. Parse payload  
+  2. Store in environment_readings
+  3. Temperature threshold checks → WhatsApp alerts (6h cooldown)
 """
 import json
 import logging
@@ -29,23 +33,37 @@ logger = logging.getLogger(__name__)
 _client: mqtt.Client | None = None
 
 
+# ── Callbacks ─────────────────────────────────────────────────────────────────
+
 def _on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
     if rc == 0:
         logger.info("MQTT connected to %s:%s", settings.MQTT_BROKER, settings.MQTT_PORT)
+        # Subscribe to both topics
         client.subscribe(settings.MQTT_DOSE_TOPIC)
         logger.info("Subscribed to topic: %s", settings.MQTT_DOSE_TOPIC)
+        client.subscribe(MQTT_ENV_TOPIC)
+        logger.info("Subscribed to topic: %s", MQTT_ENV_TOPIC)
     else:
         logger.error("MQTT connection failed with rc=%d", rc)
 
 
+MQTT_ENV_TOPIC = "pillbox/environment"
+
+
 def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
-    """Handle an incoming MQTT message in a worker thread."""
-    threading.Thread(target=_process_message, args=(msg.payload,), daemon=True).start()
+    """Route incoming messages based on topic."""
+    if msg.topic == settings.MQTT_DOSE_TOPIC:
+        threading.Thread(target=_process_dose_event, args=(msg.payload,), daemon=True).start()
+    elif msg.topic == MQTT_ENV_TOPIC:
+        threading.Thread(target=_process_environment_event, args=(msg.payload,), daemon=True).start()
+    else:
+        logger.debug("Received message on unhandled topic: %s", msg.topic)
 
 
-def _process_message(payload: bytes) -> None:
+# ── Dose event handler ────────────────────────────────────────────────────────
+
+def _process_dose_event(payload: bytes) -> None:
     """Parse, validate and process a dose event payload."""
-    # Lazy imports to avoid circular refs at module load time
     from app.models.dose_event import MQTTDosePayload
     from app.services.adherence_engine import (
         classify_dose, record_dose_event, check_drug_holiday,
@@ -58,12 +76,12 @@ def _process_message(payload: bytes) -> None:
         data = json.loads(payload.decode("utf-8"))
         event_payload = MQTTDosePayload(**data)
     except Exception as exc:
-        logger.error("MQTT payload parse error: %s | raw: %s", exc, payload)
+        logger.error("MQTT dose payload parse error: %s | raw: %s", exc, payload)
         return
 
-    patient_id = event_payload.patient_id
+    patient_id    = event_payload.patient_id
     medication_id = event_payload.medication_id
-    timestamp = event_payload.timestamp
+    timestamp     = event_payload.timestamp
 
     # 1. Classify
     status = classify_dose(medication_id, timestamp)
@@ -81,19 +99,19 @@ def _process_message(payload: bytes) -> None:
         risk_data = compute_and_store_risk(patient_id)
         alert_missed_dose(patient_id, f"med#{medication_id}", risk_data["score"])
         ws_event = {
-            "type": WSEventType.ALERT_TRIGGERED.value,
+            "type":       WSEventType.ALERT_TRIGGERED.value,
             "patient_id": patient_id,
             "alert_type": AlertType.MISSED_DOSE.value,
-            "timestamp": utcnow_str(),
+            "timestamp":  utcnow_str(),
         }
     else:
         risk_data = compute_and_store_risk(patient_id)
         ws_event = {
-            "type": WSEventType.DOSE_EVENT.value,
-            "patient_id": patient_id,
-            "status": status.value,
+            "type":          WSEventType.DOSE_EVENT.value,
+            "patient_id":    patient_id,
+            "status":        status.value,
             "medication_id": medication_id,
-            "timestamp": timestamp,
+            "timestamp":     timestamp,
         }
 
     # 5. Broadcast WebSocket update
@@ -109,11 +127,11 @@ def _process_message(payload: bytes) -> None:
 
     # 6. Risk update push
     risk_event = {
-        "type": WSEventType.RISK_UPDATE.value,
+        "type":       WSEventType.RISK_UPDATE.value,
         "patient_id": patient_id,
-        "score": risk_data["score"],
+        "score":      risk_data["score"],
         "risk_level": risk_data["risk_level"],
-        "timestamp": risk_data["timestamp"],
+        "timestamp":  risk_data["timestamp"],
     }
     try:
         loop = asyncio.get_event_loop()
@@ -122,8 +140,21 @@ def _process_message(payload: bytes) -> None:
     except Exception:
         pass
 
-    logger.info("MQTT event processed: patient=%d status=%s", patient_id, status.value)
+    logger.info("MQTT dose event processed: patient=%d status=%s", patient_id, status.value)
 
+
+# ── Environment event handler (GAP 4) ─────────────────────────────────────────
+
+def _process_environment_event(payload: bytes) -> None:
+    """
+    Handle DHT22 temperature/humidity readings from pillbox/environment.
+    Delegates all logic to environment_service.
+    """
+    from app.services.environment_service import process_environment_event
+    process_environment_event(payload)
+
+
+# ── MQTT lifecycle ────────────────────────────────────────────────────────────
 
 def _on_disconnect(client: mqtt.Client, userdata, rc: int) -> None:
     if rc != 0:
@@ -134,8 +165,8 @@ def start_mqtt_client() -> None:
     """Connect and start the MQTT background loop."""
     global _client
     _client = mqtt.Client(client_id=settings.MQTT_CLIENT_ID, clean_session=True)
-    _client.on_connect = _on_connect
-    _client.on_message = _on_message
+    _client.on_connect    = _on_connect
+    _client.on_message    = _on_message
     _client.on_disconnect = _on_disconnect
 
     if settings.MQTT_USERNAME:
