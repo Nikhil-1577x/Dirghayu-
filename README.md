@@ -1,14 +1,14 @@
-# Smart Medication Adherence System – Backend
+# Smart Medication Adherence System
 
-> Production-grade Python backend for a smart pill dispenser system.  
-> Stack: **FastAPI · SQLite · Mosquitto MQTT · APScheduler · Twilio · ReportLab · WebSockets**
+> Production-grade Python backend + React frontend for a smart pill dispenser system.  
+> Stack: **FastAPI · React · SQLite · Mosquitto MQTT · APScheduler · Twilio · ReportLab · WebSockets**
 
 ---
 
 ## Project Structure
 
 ```
-backend/
+Backend/
 ├── app/
 │   ├── main.py              # FastAPI entrypoint
 │   ├── config.py            # Settings from .env
@@ -18,6 +18,12 @@ backend/
 │   ├── api/                 # REST + WebSocket routes
 │   ├── utils/               # db_utils, time_utils, constants
 │   └── ai_modules/          # OCR, risk prediction, narrative
+├── Frontend/               # React + Vite + Tailwind
+│   ├── src/
+│   │   ├── api/            # API client, endpoints, hooks
+│   │   ├── components/
+│   │   └── pages/
+│   └── package.json
 ├── mqtt_publisher_example.py
 ├── requirements.txt
 ├── .env.example
@@ -62,14 +68,37 @@ sudo apt install mosquitto mosquitto-clients
 sudo systemctl start mosquitto
 ```
 
-### 5. Start the FastAPI server
+### 5. Start the backend
+
+Activate the virtual environment first, then run:
 
 ```bash
+# Windows (PowerShell)
+.\venv\Scripts\Activate.ps1
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# Or use venv Python directly (no activation needed)
+.\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Server starts at: **http://localhost:8000**  
-Interactive docs: **http://localhost:8000/docs**
+Backend runs at: **http://localhost:8000**  
+API docs: **http://localhost:8000/docs**
+
+### 6. Start the frontend (development)
+
+```bash
+# Windows (PowerShell) – use semicolons instead of &&
+cd Frontend; npm install; npm run dev
+
+# Or run each command separately
+cd Frontend
+npm install
+npm run dev
+```
+
+Frontend runs at: **http://localhost:5173** and proxies API/WebSocket to the backend.
+
+**Production:** Build the frontend (`npm run build` in Frontend), then start the backend. The built app is served from `/` when `Frontend/dist` exists.
 
 ---
 
@@ -94,6 +123,9 @@ Interactive docs: **http://localhost:8000/docs**
 | `GET` | `/patient/{id}/report/download/{report_id}` | Download PDF |
 | `POST` | `/patient/{id}/medication` | Add medication |
 | `GET` | `/patient/{id}/medications` | List medications |
+| `POST` | `/patient/{id}/medications/check-interactions` | Check drug interactions & trigger severe alerts |
+| `GET` | `/drug-interactions` | List CDSCO drug interaction database |
+| `GET` | `/patient/{id}/environment` | DHT22 environment readings |
 | `POST` | `/patient/{id}/appointment` | Add appointment |
 | `GET` | `/patient/{id}/appointments` | List appointments |
 | `WS` | `/ws/{patient_id}` | WebSocket realtime events |
@@ -192,6 +224,17 @@ Publishes to `pillbox/dose_event` every 5 seconds:
 }
 ```
 
+Publishes to `pillbox/environment`:
+
+```json
+{
+  "patient_id": 1,
+  "temperature_c": 31.2,
+  "humidity_pct": 68.0,
+  "timestamp": "2026-03-08T08:05:00+00:00"
+}
+```
+
 ---
 
 ## Adherence Rules
@@ -216,11 +259,14 @@ Publishes to `pillbox/dose_event` every 5 seconds:
 
 ## Alert Cascade
 
-1. **Missed dose** → WhatsApp to **family** (cooldown: 4h)
-2. **Risk score > 70** → Escalate to **doctor** (cooldown: 12h)
-3. **Drug holiday** → Urgent WhatsApp to **both**
-4. **Daily summary** → Every 8 PM UTC → family
-5. **Pre-visit report** → 48h before appointment → PDF + doctor WhatsApp
+1. **Missed dose** → WhatsApp to **family** (cooldown: 4h per patient)
+2. **Risk score > 70** → Escalate to **doctor** (cooldown: 12h per patient)
+3. **Drug holiday** → Urgent WhatsApp to **both** (no cooldown)
+4. **Severe drug interaction** → WhatsApp to **doctor**
+5. **High storage temp (>30°C)** → WhatsApp to **family** (escalates to **doctor** >35°C, cooldown: 6h)
+6. **Morning protocol** → Every 7 AM UTC → **patient** (personalized guidelines + exercise tip)
+7. **Daily summary** → Every 8 PM UTC → **family**
+8. **Pre-visit report** → 48h before appointment → PDF + doctor WhatsApp
 
 ---
 

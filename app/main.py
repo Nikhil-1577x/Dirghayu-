@@ -12,11 +12,14 @@ Shutdown:
   2. Stop scheduler
 """
 import logging
+from pathlib import Path
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import init_db
@@ -110,7 +113,7 @@ app.include_router(ws_router)
 app.include_router(interaction_router)
 
 
-# ── Health check ──────────────────────────────────────────────────────────────
+# ── Health check (must be before frontend catch-all) ───────────────────────────
 @app.get("/", tags=["Health"])
 async def health_check():
     return {
@@ -123,6 +126,22 @@ async def health_check():
 @app.get("/health", tags=["Health"])
 async def health():
     return {"status": "healthy", "db": settings.DB_PATH}
+
+
+# ── Serve frontend (production) ───────────────────────────────────────────────
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "Frontend" / "dist"
+
+if _FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{path:path}", tags=["Frontend"])
+    async def serve_frontend(path: str = ""):
+        """Serve frontend SPA for client-side routes. / and /health handled above."""
+        if path and not path.startswith(("api", "patient", "ws", "docs", "redoc", "openapi")):
+            file_path = _FRONTEND_DIST / path
+            if file_path.is_file():
+                return FileResponse(file_path)
+        return FileResponse(_FRONTEND_DIST / "index.html")
 
 
 # ── Global exception handler ──────────────────────────────────────────────────
