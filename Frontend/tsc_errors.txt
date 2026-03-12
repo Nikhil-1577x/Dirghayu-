@@ -1,0 +1,7 @@
+
+> dirghayu@0.0.0 build
+> tsc -b && vite build
+
+src/components/AdherenceHeatmap.tsx(51,15): error TS6133: 'today' is declared but its value is never read.
+src/components/AdherenceHeatmap.tsx(52,15): error TS6133: 'startOfWeek' is declared but its value is never read.
+src/components/LiveActivityFeed.tsx(73,27): error TS6133: 'isNew' is declared but its value is never read.
