@@ -1,5 +1,7 @@
 # Deploy to Vercel + Render
 
+**Monorepo:** Frontend and backend live in the same repo. Render uses the repo root (backend). Vercel uses the `Frontend` subfolder.
+
 ## What you need
 
 1. **GitHub account** – push your code to a GitHub repo
@@ -23,8 +25,9 @@ git push origin main
 ## Step 2: Deploy backend on Render
 
 1. Go to [render.com](https://render.com) → **Dashboard** → **New** → **Web Service**
-2. Connect your GitHub repo and select the **Backend** repository
-3. Render should auto-detect `render.yaml`. If not:
+2. Connect your GitHub repo and select **this repository** (same repo for both)
+3. **Root Directory:** leave **blank** – Render uses the repo root (where `app/`, `requirements.txt` live)
+4. Render should auto-detect `render.yaml`. If not:
    - **Build Command:** `pip install -r requirements.txt`
    - **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 4. Click **Create Web Service**
@@ -36,8 +39,8 @@ git push origin main
 ## Step 3: Deploy frontend on Vercel
 
 1. Go to [vercel.com](https://vercel.com) → **Add New** → **Project**
-2. Import your GitHub repo
-3. **Root Directory:** set to `Frontend` (important)
+2. Import the **same** GitHub repo
+3. **Root Directory:** set to `Frontend` (important – this tells Vercel to build from the frontend subfolder)
 4. **Environment Variables** – add:
 
    | Name            | Value                                         |

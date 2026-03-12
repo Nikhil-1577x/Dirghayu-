@@ -114,7 +114,7 @@ app.include_router(interaction_router)
 
 
 # ── Health check (must be before frontend catch-all) ───────────────────────────
-@app.get("/", tags=["Health"])
+@app.get("/health", tags=["Health"])
 async def health_check():
     return {
         "status": "ok",
