@@ -42,7 +42,7 @@ class Settings:
     APP_TITLE: str = "Smart Medication Adherence System"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
-    ALLOWED_ORIGINS: list = ["*"]   # Tighten in production
+    ALLOWED_ORIGINS: list = os.getenv("ALLOWED_ORIGINS", "*").split(",") if os.getenv("ALLOWED_ORIGINS") else ["*"]
 
 
 settings = Settings()
